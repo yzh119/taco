@@ -5,8 +5,10 @@
 #include <stdint.h>
 #include <math.h>
 #include <thrust/complex.h>
+#include "atomic.cuh"
 #include <random>
 #include "taco.h"
+//#include "sddmm_csr_gpu_taco.h"
 #define TACO_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
 #define TACO_MAX(_a,_b) ((_a) > (_b) ? (_a) : (_b))
 #define TACO_DEREF(_a) (((___context___*)(*__ctx__))->_a)
@@ -123,10 +125,10 @@ __device__ inline void atomicAddWarp(T *array, int index, T val)
     val += __shfl_down_sync(-1, val, 2);
     val += __shfl_down_sync(-1, val, 1);
     if(threadIdx.x % 32 == 0) {
-      atomicAdd(&array[index], val);
+      AtomicAdd(&array[index], val);
     }
   } else {
-    atomicAdd(&array[index], val);
+    AtomicAdd(&array[index], val);
   }
 }
 
