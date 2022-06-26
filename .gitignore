@@ -11,3 +11,5 @@ CMakeCache.txt
 doc
 
 apps/tensor_times_vector/tensor_times_vector
+
+.vscode/
