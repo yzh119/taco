@@ -7,7 +7,9 @@
 #include <thrust/complex.h>
 #include "atomic.cuh"
 #include <random>
+#include <string>
 #include "taco.h"
+#include "../test/gtest/gtest.h"
 //#include "sddmm_csr_gpu_taco.h"
 #define TACO_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
 #define TACO_MAX(_a,_b) ((_a) > (_b) ? (_a) : (_b))
@@ -29,6 +31,12 @@ typedef struct {
 #endif
 
 using namespace taco;
+
+void ASSERT_TENSOR_EQ(TensorBase expected, TensorBase actual) {
+  SCOPED_TRACE(std::string("expected: ") + util::toString(expected));
+  SCOPED_TRACE(std::string("  actual: ") + util::toString(actual));
+  ASSERT_TRUE(equals(expected, actual));
+}
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
@@ -214,13 +222,50 @@ int main() {
   C.pack();
   D.pack();
 
+  srand(434321);
+
+  for (int i = 0; i < NUM_I; ++i) {
+    for (int j = 0; j < NUM_J; ++j) {
+      double rand_double = (double)rand() / (double)(RAND_MAX);
+      C.insert({i, j}, rand_double);
+    }
+  }
+
+  for (int i = 0; i < NUM_J; ++i) {
+    for (int j = 0; j < NUM_K; ++j) {
+      double rand_double = (double)rand() / (double)(RAND_MAX);
+      D.insert({i, j}, rand_double);
+    }
+  }
+
+  C.pack();
+  D.pack();
+
+  double density = 0.01;
+  int nnz = (int) (density * NUM_I * NUM_K);
+
+  for (int t = 0; t < nnz; ++t) {
+    int i = rand() % NUM_I;
+    int j = rand() % NUM_K;
+    B.insert({i, j}, 1.0);
+  }
+  B.pack();
+
   Tensor<double> A("A", {NUM_I, NUM_K}, CSR);
 
-  // Define the SDDMM computation using index notation.
-  IndexVar i("i"), j("j"), k("k");
-  A(i, k) = B(i, k) * C(i, j) * D(j, k);
+  // // Define the SDDMM computation using index notation.
+  // A(i, k) = B(i, k) * C(i, j) * D(j, k);
 
   sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT());
+
+  Tensor<double> expected("expected", {NUM_I, NUM_K}, {Dense, Dense});
+  IndexVar i("i"), j("j"), k("k");
+  expected(i, k) = B(i, k) * C(i, j) * D(j, k);
+  expected.compile();
+  expected.assemble();
+  expected.compute();
+
+  ASSERT_TENSOR_EQ(expected, A);
 
   return 0;
 }
