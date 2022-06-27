@@ -92,4 +92,5 @@ add_subdirectory(tools)
 add_subdirectory(apps)
 add_custom_target(src DEPENDS apps)
 
+add_subdirectory(cnpy)
 add_subdirectory(eval_prepared_gpu)

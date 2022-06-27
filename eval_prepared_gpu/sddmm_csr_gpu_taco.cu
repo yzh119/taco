@@ -4,11 +4,13 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <math.h>
+#include <cnpy.h>
 #include <thrust/complex.h>
 #include "atomic.cuh"
 #include <random>
 #include <string>
 #include "taco.h"
+#include <cuda_runtime_api.h>
 #include "../test/gtest/gtest.h"
 //#include "sddmm_csr_gpu_taco.h"
 #define TACO_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
@@ -31,6 +33,34 @@ typedef struct {
 #endif
 
 using namespace taco;
+
+struct GpuTimer {
+  cudaEvent_t startEvent;
+  cudaEvent_t stopEvent;
+
+  GpuTimer() {
+    cudaEventCreate(&startEvent);
+    cudaEventCreate(&stopEvent);
+  }
+
+  ~GpuTimer() {
+    cudaEventDestroy(startEvent);
+    cudaEventDestroy(stopEvent);
+  }
+
+  void start() { cudaEventRecord(startEvent, 0); }
+
+  void stop() {
+    cudaEventRecord(stopEvent, 0);
+    cudaEventSynchronize(stopEvent);
+  }
+
+  float elapsed_msecs() {
+    float elapsed;
+    cudaEventElapsedTime(&elapsed, startEvent, stopEvent);
+    return elapsed;
+  }
+};
 
 void ASSERT_TENSOR_EQ(TensorBase expected, TensorBase actual) {
   SCOPED_TRACE(std::string("expected: ") + util::toString(expected));
@@ -191,15 +221,31 @@ void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor
 
 }
 
-int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, taco_tensor_t *D) {
+int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, taco_tensor_t *D, bool profile=false) {
   int B1_dimension = (int)(B->dimensions[0]);
   int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
 
   int32_t* i_blockStarts = 0;
   gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + 2047) / 2048 + 1)));
+  // cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + 2047) / 2048 + 1));
   i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) 2048, (int32_t) 128, ((B2_pos[B1_dimension] + 2047) / 2048));
 
-  sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
+  if (profile) {
+    GpuTimer gpu_timer;
+    // int warmup_iter = 10;
+    // int repeat_iter = 100;
+    // for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
+    //   if (iter == warmup_iter) {
+    //     gpu_timer.start();
+    //   }
+    //   sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
+    // }
+    // gpu_timer.stop();
+    // float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
+    // printf("Time %f (ms)", kernel_dur_msecs);
+  } else {
+    sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
+  }
   cudaDeviceSynchronize();
 
   cudaFree(i_blockStarts);
@@ -207,32 +253,58 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
   return 0;
 }
 
+void read_npz_file(const std::string& filename, int &M, int &K, int &NNZ, std::vector<int>& indptr, std::vector<int>& indices) {
+  cnpy::npz_t data = cnpy::npz_load(filename);
+  cnpy::NpyArray shape = data["shape"];
+  int* shape_data = shape.data<int>();
+  M = shape_data[0];
+  K = shape_data[1];
+  NNZ = shape_data[2];
+  indptr = std::move(data["indptr"].as_vec<int>());
+  indices = std::move(data["indices"].as_vec<int>());
+}
 
-int main() {
-  std::default_random_engine gen(0);
-  std::uniform_real_distribution<float> unif(0.0, 1.0);
+int main(int argc, char *argv[]) {
+  // std::default_random_engine gen(0);
+  // std::uniform_real_distribution<float> unif(0.0, 1.0);
 
-  int NUM_I = 100;
-  int NUM_J = 100;
-  int NUM_K = 4 * 32;
+  // int NUM_I = 100;
+  // int NUM_J = 100;
+  // int NUM_K = 4 * 32;
+  int M;
+  int N;
+  int nnz;
+  std::vector<int> csr_indptr_buffer;
+  std::vector<int> row_buffer;
+  std::vector<int> csr_indices_buffer;
 
-  Tensor<float> A("A", {NUM_I, NUM_K}, CSR);
-  Tensor<float> B("B", {NUM_I, NUM_K}, CSR);
-  Tensor<float> C("C", {NUM_I, NUM_J}, {Dense, Dense});
-  Tensor<float> D("D", {NUM_J, NUM_K}, Format({{Dense, Dense}, {1, 0}}));
-  Tensor<float> expected("expected", {NUM_I, NUM_K}, {Dense, Dense});
+  read_npz_file(argv[1], M, N, nnz, csr_indptr_buffer, csr_indices_buffer);
+  int row = 0;
+  for (int i = 0; i < csr_indptr_buffer.size() - 1; ++i) {
+    for (int j = 0; j < csr_indptr_buffer[i + 1] - csr_indptr_buffer[i]; ++j) {
+      row_buffer.push_back(row);
+    } 
+    row++;
+  }
+  printf("%d %d %d\n", M, N, nnz);
 
-  srand(434321);
+  int K = std::stoi(argv[2]);
 
-  for (int i = 0; i < NUM_I; ++i) {
-    for (int j = 0; j < NUM_J; ++j) {
+  Tensor<float> A("A", {M, N}, CSR);
+  Tensor<float> B("B", {M, N}, CSR);
+  Tensor<float> C("C", {M, K}, {Dense, Dense});
+  Tensor<float> D("D", {K, N}, Format({{Dense, Dense}, {1, 0}}));
+  Tensor<float> expected("expected", {M, N}, {Dense, Dense});
+
+  for (int i = 0; i < M; ++i) {
+    for (int j = 0; j < K; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       C.insert({i, j}, rand_float);
     }
   }
 
-  for (int i = 0; i < NUM_J; ++i) {
-    for (int j = 0; j < NUM_K; ++j) {
+  for (int i = 0; i < K; ++i) {
+    for (int j = 0; j < N; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       D.insert({i, j}, rand_float);
     }
@@ -241,12 +313,9 @@ int main() {
   C.pack();
   D.pack();
 
-  float density = 0.01;
-  int nnz = (int) (density * NUM_I * NUM_K);
-
   for (int t = 0; t < nnz; ++t) {
-    int i = rand() % NUM_I;
-    int j = rand() % NUM_K;
+    int i = row_buffer[t];
+    int j = csr_indices_buffer[t];
     B.insert({i, j}, 1.0f);
     A.insert({i, j}, 0.0f);
   }
@@ -263,7 +332,9 @@ int main() {
 
   sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT());
 
-  ASSERT_TENSOR_EQ(expected, A);
+  // ASSERT_TENSOR_EQ(expected, A);
+
+  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true);
 
   return 0;
 }
