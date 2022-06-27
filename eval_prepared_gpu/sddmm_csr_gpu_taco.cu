@@ -180,9 +180,11 @@ void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor
     #pragma unroll 4
     for (int32_t dense_val = 0; dense_val < 4; dense_val++) {
       int32_t j = dense_val * 32 + thread;
-      int32_t jC = i * C2_dimension + j;
-      int32_t jD = f * D1_dimension + j;
-      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+      if (j < C2_dimension) {
+        int32_t jC = i * C2_dimension + j;
+        int32_t jD = f * D1_dimension + j;
+        tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+      }
     }
     atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
   }
