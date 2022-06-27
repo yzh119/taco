@@ -133,24 +133,24 @@ __device__ inline void atomicAddWarp(T *array, int index, T val)
     val += __shfl_down_sync(-1, val, 2);
     val += __shfl_down_sync(-1, val, 1);
     if(threadIdx.x % 32 == 0) {
-      AtomicAdd(&array[index], val);
+      atomicAdd(&array[index], val);
     }
   } else {
-    AtomicAdd(&array[index], val);
+    atomicAdd(&array[index], val);
   }
 }
 
 __global__
 void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
-  double* __restrict__ A_vals = (double*)(A->vals);
+  float* __restrict__ A_vals = (float*)(A->vals);
   int B1_dimension = (int)(B->dimensions[0]);
   int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
   int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
-  double* __restrict__ B_vals = (double*)(B->vals);
+  float* __restrict__ B_vals = (float*)(B->vals);
   int C2_dimension = (int)(C->dimensions[1]);
-  double* __restrict__ C_vals = (double*)(C->vals);
+  float* __restrict__ C_vals = (float*)(C->vals);
   int D1_dimension = (int)(D->dimensions[0]);
-  double* __restrict__ D_vals = (double*)(D->vals);
+  float* __restrict__ D_vals = (float*)(D->vals);
 
   int32_t block = blockIdx.x;
   int32_t thread = (threadIdx.x % (32));
@@ -176,7 +176,7 @@ void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor
       i_pos = i_pos + 1;
       i = i_pos;
     }
-    double tdense_val_val = 0.0;
+    float tdense_val_val = 0.0;
     #pragma unroll 4
     for (int32_t dense_val = 0; dense_val < 4; dense_val++) {
       int32_t j = dense_val * 32 + thread;
@@ -184,7 +184,7 @@ void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor
       int32_t jD = f * D1_dimension + j;
       tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
     }
-    atomicAddWarp<double>(A_vals, fposB, tdense_val_val);
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
   }
 
 }
@@ -197,7 +197,6 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
   gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + 2047) / 2048 + 1)));
   i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) 2048, (int32_t) 128, ((B2_pos[B1_dimension] + 2047) / 2048));
 
-
   sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
   cudaDeviceSynchronize();
 
@@ -209,61 +208,58 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
 
 int main() {
   std::default_random_engine gen(0);
-  std::uniform_real_distribution<double> unif(0.0, 1.0);
+  std::uniform_real_distribution<float> unif(0.0, 1.0);
 
   int NUM_I = 100;
   int NUM_J = 100;
-  int NUM_K = 100;
+  int NUM_K = 4 * 32;
 
-  Tensor<double> B("B", {NUM_I, NUM_K}, CSR);
-  Tensor<double> C("C", {NUM_I, NUM_J}, {Dense, Dense});
-  Tensor<double> D("D", {NUM_J, NUM_K}, {Dense, Dense});
-  B.pack();
-  C.pack();
-  D.pack();
+  Tensor<float> A("A", {NUM_I, NUM_K}, CSR);
+  Tensor<float> B("B", {NUM_I, NUM_K}, CSR);
+  Tensor<float> C("C", {NUM_I, NUM_J}, {Dense, Dense});
+  Tensor<float> D("D", {NUM_J, NUM_K}, Format({{Dense, Dense}, {1, 0}}));
+  Tensor<float> expected("expected", {NUM_I, NUM_K}, {Dense, Dense});
 
   srand(434321);
 
   for (int i = 0; i < NUM_I; ++i) {
     for (int j = 0; j < NUM_J; ++j) {
-      double rand_double = (double)rand() / (double)(RAND_MAX);
-      C.insert({i, j}, rand_double);
+      float rand_float = (float)rand() / (float)(RAND_MAX);
+      C.insert({i, j}, rand_float);
     }
   }
 
   for (int i = 0; i < NUM_J; ++i) {
     for (int j = 0; j < NUM_K; ++j) {
-      double rand_double = (double)rand() / (double)(RAND_MAX);
-      D.insert({i, j}, rand_double);
+      float rand_float = (float)rand() / (float)(RAND_MAX);
+      D.insert({i, j}, rand_float);
     }
   }
 
   C.pack();
   D.pack();
 
-  double density = 0.01;
+  float density = 0.01;
   int nnz = (int) (density * NUM_I * NUM_K);
 
   for (int t = 0; t < nnz; ++t) {
     int i = rand() % NUM_I;
     int j = rand() % NUM_K;
-    B.insert({i, j}, 1.0);
+    B.insert({i, j}, 1.0f);
+    A.insert({i, j}, 0.0f);
   }
   B.pack();
-
-  Tensor<double> A("A", {NUM_I, NUM_K}, CSR);
+  A.pack();
 
   // // Define the SDDMM computation using index notation.
   // A(i, k) = B(i, k) * C(i, j) * D(j, k);
-
-  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT());
-
-  Tensor<double> expected("expected", {NUM_I, NUM_K}, {Dense, Dense});
   IndexVar i("i"), j("j"), k("k");
   expected(i, k) = B(i, k) * C(i, j) * D(j, k);
   expected.compile();
   expected.assemble();
   expected.compute();
+
+  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT());
 
   ASSERT_TENSOR_EQ(expected, A);
 
