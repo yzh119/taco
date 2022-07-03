@@ -170,16 +170,16 @@ int main(int argc, char *argv[]) {
     A.insert({i, j}, 0.0f);
 
     float dot = 0.0f;
-    for (int k = 0; k < K; ++k) {
-      dot += C_val[i * K + k] * D_val[k * N + j];
-    }
-    expected.insert({i, j}, dot);
+    // for (int k = 0; k < K; ++k) {
+    //   dot += C_val[i * K + k] * D_val[k * N + j];
+    // }
+    // expected.insert({i, j}, dot);
   }
   B.pack();
   A.pack();
-  expected.pack();
+  // expected.pack();
 
-  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), false, 128, 16);
+  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true, 128, 16);
 
   // ASSERT_TENSOR_EQ(expected, A);
 
