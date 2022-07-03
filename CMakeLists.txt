@@ -81,6 +81,7 @@ set(TACO_TOOLS_DIR   ${TACO_PROJECT_DIR}/tools)
 set(TACO_INCLUDE_DIR ${TACO_PROJECT_DIR}/include)
 
 include_directories(${TACO_INCLUDE_DIR})
+include_directories(${TACO_PROJECT_DIR}/cnpy)
 
 set(TACO_LIBRARY_DIR ${CMAKE_LIBRARY_OUTPUT_DIRECTORY})
 

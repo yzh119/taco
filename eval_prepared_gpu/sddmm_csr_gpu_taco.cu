@@ -12,7 +12,7 @@
 #include "taco.h"
 #include <cuda_runtime_api.h>
 #include "../test/gtest/gtest.h"
-//#include "sddmm_csr_gpu_taco.h"
+#include "sddmm_csr_gpu_taco.h"
 #define TACO_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
 #define TACO_MAX(_a,_b) ((_a) > (_b) ? (_a) : (_b))
 #define TACO_DEREF(_a) (((___context___*)(*__ctx__))->_a)
@@ -68,183 +68,33 @@ void ASSERT_TENSOR_EQ(TensorBase expected, TensorBase actual) {
   ASSERT_TRUE(equals(expected, actual));
 }
 
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
-{
-  if (code != cudaSuccess)
-  {
-    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-    if (abort) exit(code);
-  }
-}
-__device__ __host__ int taco_binarySearchAfter(int *array, int arrayStart, int arrayEnd, int target) {
-  if (array[arrayStart] >= target) {
-    return arrayStart;
-  }
-  int lowerBound = arrayStart; // always < target
-  int upperBound = arrayEnd; // always >= target
-  while (upperBound - lowerBound > 1) {
-    int mid = (upperBound + lowerBound) / 2;
-    int midValue = array[mid];
-    if (midValue < target) {
-      lowerBound = mid;
-    }
-    else if (midValue > target) {
-      upperBound = mid;
-    }
-    else {
-      return mid;
-    }
-  }
-  return upperBound;
-}
-__device__ __host__ int taco_binarySearchBefore(int *array, int arrayStart, int arrayEnd, int target) {
-  if (array[arrayEnd] <= target) {
-    return arrayEnd;
-  }
-  int lowerBound = arrayStart; // always <= target
-  int upperBound = arrayEnd; // always > target
-  while (upperBound - lowerBound > 1) {
-    int mid = (upperBound + lowerBound) / 2;
-    int midValue = array[mid];
-    if (midValue < target) {
-      lowerBound = mid;
-    }
-    else if (midValue > target) {
-      upperBound = mid;
-    }
-    else {
-      return mid;
-    }
-  }
-  return lowerBound;
-}
-__global__ void taco_binarySearchBeforeBlock(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int values_per_block, int num_blocks) {
-  int thread = threadIdx.x;
-  int block = blockIdx.x;
-  int idx = block * blockDim.x + thread;
-  if (idx >= num_blocks+1) {
-    return;
-  }
-
-  results[idx] = taco_binarySearchBefore(array, arrayStart, arrayEnd, idx * values_per_block);
-}
-
-__host__ int * taco_binarySearchBeforeBlockLaunch(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int values_per_block, int block_size, int num_blocks){
-  int num_search_blocks = (num_blocks + 1 + block_size - 1) / block_size;
-  taco_binarySearchBeforeBlock<<<num_search_blocks, block_size>>>(array, results, arrayStart, arrayEnd, values_per_block, num_blocks);
-  return results;
-}
-__global__ void taco_binarySearchIndirectBeforeBlock(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int * __restrict__ targets, int num_blocks) {
-  int thread = threadIdx.x;
-  int block = blockIdx.x;
-  int idx = block * blockDim.x + thread;
-  if (idx >= num_blocks+1) {
-    return;
-  }
-
-  results[idx] = taco_binarySearchBefore(array, arrayStart, arrayEnd, targets[idx]);
-}
-
-__host__ int * taco_binarySearchIndirectBeforeBlockLaunch(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int * __restrict__ targets, int block_size, int num_blocks){
-  int num_search_blocks = (num_blocks + 1 + block_size - 1) / block_size;
-  taco_binarySearchIndirectBeforeBlock<<<num_search_blocks, block_size>>>(array, results, arrayStart, arrayEnd, targets, num_blocks);
-  return results;
-}
-template<typename T>
-__device__ inline void atomicAddWarp(T *array, int index, T val)
-{
-  int leader_index = __shfl_sync(-1, index, 0);
-  int mask = __ballot_sync(-1, leader_index == index);
-  if(mask == -1) {
-    val += __shfl_down_sync(-1, val, 16);
-    val += __shfl_down_sync(-1, val, 8);
-    val += __shfl_down_sync(-1, val, 4);
-    val += __shfl_down_sync(-1, val, 2);
-    val += __shfl_down_sync(-1, val, 1);
-    if(threadIdx.x % 32 == 0) {
-      atomicAdd(&array[index], val);
-    }
-  } else {
-    atomicAdd(&array[index], val);
-  }
-}
-
-__global__
-void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
-  float* __restrict__ A_vals = (float*)(A->vals);
-  int B1_dimension = (int)(B->dimensions[0]);
-  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
-  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
-  float* __restrict__ B_vals = (float*)(B->vals);
-  int C2_dimension = (int)(C->dimensions[1]);
-  float* __restrict__ C_vals = (float*)(C->vals);
-  int D1_dimension = (int)(D->dimensions[0]);
-  float* __restrict__ D_vals = (float*)(D->vals);
-
-  int32_t block = blockIdx.x;
-  int32_t thread = (threadIdx.x % (32));
-  int32_t warp = (threadIdx.x / 32);
-  if (threadIdx.x >= 512) {
-    return;
-  }
-
-  int32_t pB2_begin = i_blockStarts[block];
-  int32_t pB2_end = i_blockStarts[(block + 1)];
-  int32_t fpos1 = warp * 128;
-  int32_t fposB = block * 2048 + fpos1;
-  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
-  int32_t i = i_pos;
-  for (int32_t nnz = 0; nnz < 128; nnz++) {
-    int32_t fpos1 = warp * 128 + nnz;
-    int32_t fposB = block * 2048 + fpos1;
-    if (fposB >= B2_pos[B1_dimension])
-      break;
-
-    int32_t f = B2_crd[fposB];
-    while (fposB == B2_pos[(i_pos + 1)]) {
-      i_pos = i_pos + 1;
-      i = i_pos;
-    }
-    float tdense_val_val = 0.0;
-    #pragma unroll 4
-    for (int32_t dense_val = 0; dense_val < 4; dense_val++) {
-      int32_t j = dense_val * 32 + thread;
-      if (j < C2_dimension) {
-        int32_t jC = i * C2_dimension + j;
-        int32_t jD = f * D1_dimension + j;
-        tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
-      }
-    }
-    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
-  }
-
-}
-
-int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, taco_tensor_t *D, bool profile=false) {
+int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, taco_tensor_t *D, bool profile, int nnz_per_warp, int warp_per_tb) {
   int B1_dimension = (int)(B->dimensions[0]);
   int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
 
+  int nnz_per_tb = nnz_per_warp * warp_per_tb;
   int32_t* i_blockStarts = 0;
-  gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + 2047) / 2048 + 1)));
-  // cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + 2047) / 2048 + 1));
-  i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) 2048, (int32_t) 128, ((B2_pos[B1_dimension] + 2047) / 2048));
+  gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb + 1)));
+  i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) nnz_per_tb, (int32_t) 128, ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb));
+
+  // std::cout << nnz_per_warp << " " << warp_per_tb << " " << ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb) << "\n";
+  kernelFunction_t kernel_func = GetKernelFunc(nnz_per_warp, warp_per_tb);
 
   if (profile) {
     GpuTimer gpu_timer;
-    // int warmup_iter = 10;
-    // int repeat_iter = 100;
-    // for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
-    //   if (iter == warmup_iter) {
-    //     gpu_timer.start();
-    //   }
-    //   sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
-    // }
-    // gpu_timer.stop();
-    // float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
-    // printf("Time %f (ms)", kernel_dur_msecs);
+    int warmup_iter = 10;
+    int repeat_iter = 100;
+    for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
+      if (iter == warmup_iter) {
+        gpu_timer.start();
+      }
+      kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
+    }
+    gpu_timer.stop();
+    float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
+    printf("Time %f (ms)\n", kernel_dur_msecs);
   } else {
-    sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
+    kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
   }
   cudaDeviceSynchronize();
 
@@ -264,13 +114,11 @@ void read_npz_file(const std::string& filename, int &M, int &K, int &NNZ, std::v
   indices = std::move(data["indices"].as_vec<int>());
 }
 
+float C_val[100000000], D_val[100000000];
+
 int main(int argc, char *argv[]) {
   // std::default_random_engine gen(0);
   // std::uniform_real_distribution<float> unif(0.0, 1.0);
-
-  // int NUM_I = 100;
-  // int NUM_J = 100;
-  // int NUM_K = 4 * 32;
   int M;
   int N;
   int nnz;
@@ -294,12 +142,13 @@ int main(int argc, char *argv[]) {
   Tensor<float> B("B", {M, N}, CSR);
   Tensor<float> C("C", {M, K}, {Dense, Dense});
   Tensor<float> D("D", {K, N}, Format({{Dense, Dense}, {1, 0}}));
-  Tensor<float> expected("expected", {M, N}, {Dense, Dense});
+  Tensor<float> expected("expected", {M, N}, CSR);
 
   for (int i = 0; i < M; ++i) {
     for (int j = 0; j < K; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       C.insert({i, j}, rand_float);
+      C_val[i * K + j] = rand_float;
     }
   }
 
@@ -307,6 +156,7 @@ int main(int argc, char *argv[]) {
     for (int j = 0; j < N; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       D.insert({i, j}, rand_float);
+      D_val[i * N + j] = rand_float;
     }
   }
 
@@ -318,23 +168,22 @@ int main(int argc, char *argv[]) {
     int j = csr_indices_buffer[t];
     B.insert({i, j}, 1.0f);
     A.insert({i, j}, 0.0f);
+
+    float dot = 0.0f;
+    for (int k = 0; k < K; ++k) {
+      dot += C_val[i * K + k] * D_val[k * N + j];
+    }
+    expected.insert({i, j}, dot);
   }
   B.pack();
   A.pack();
+  expected.pack();
 
-  // // Define the SDDMM computation using index notation.
-  // A(i, k) = B(i, k) * C(i, j) * D(j, k);
-  IndexVar i("i"), j("j"), k("k");
-  expected(i, k) = B(i, k) * C(i, j) * D(j, k);
-  expected.compile();
-  expected.assemble();
-  expected.compute();
-
-  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT());
+  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), false, 128, 16);
 
   // ASSERT_TENSOR_EQ(expected, A);
 
-  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true);
+  // sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true);
 
   return 0;
 }

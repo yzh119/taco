@@ -24,7 +24,6 @@ typedef struct {
 #endif
 #endif
 
-
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
 {
@@ -34,6 +33,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
     if (abort) exit(code);
   }
 }
+
 __device__ __host__ int taco_binarySearchAfter(int *array, int arrayStart, int arrayEnd, int target) {
   if (array[arrayStart] >= target) {
     return arrayStart;
@@ -55,6 +55,7 @@ __device__ __host__ int taco_binarySearchAfter(int *array, int arrayStart, int a
   }
   return upperBound;
 }
+
 __device__ __host__ int taco_binarySearchBefore(int *array, int arrayStart, int arrayEnd, int target) {
   if (array[arrayEnd] <= target) {
     return arrayEnd;
@@ -76,6 +77,7 @@ __device__ __host__ int taco_binarySearchBefore(int *array, int arrayStart, int 
   }
   return lowerBound;
 }
+
 __global__ void taco_binarySearchBeforeBlock(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int values_per_block, int num_blocks) {
   int thread = threadIdx.x;
   int block = blockIdx.x;
@@ -92,6 +94,7 @@ __host__ int * taco_binarySearchBeforeBlockLaunch(int * __restrict__ array, int 
   taco_binarySearchBeforeBlock<<<num_search_blocks, block_size>>>(array, results, arrayStart, arrayEnd, values_per_block, num_blocks);
   return results;
 }
+
 __global__ void taco_binarySearchIndirectBeforeBlock(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int * __restrict__ targets, int num_blocks) {
   int thread = threadIdx.x;
   int block = blockIdx.x;
@@ -108,6 +111,7 @@ __host__ int * taco_binarySearchIndirectBeforeBlockLaunch(int * __restrict__ arr
   taco_binarySearchIndirectBeforeBlock<<<num_search_blocks, block_size>>>(array, results, arrayStart, arrayEnd, targets, num_blocks);
   return results;
 }
+
 template<typename T>
 __device__ inline void atomicAddWarp(T *array, int index, T val)
 {
@@ -127,24 +131,307 @@ __device__ inline void atomicAddWarp(T *array, int index, T val)
   }
 }
 
+typedef void(*kernelFunction_t)(taco_tensor_t*, taco_tensor_t*, taco_tensor_t*, taco_tensor_t*, int32_t*);
+
 __global__
-void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
-  double* __restrict__ A_vals = (double*)(A->vals);
+void sddmm_csr_gpu_tacoDeviceKernel_16_4(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
   int B1_dimension = (int)(B->dimensions[0]);
   int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
   int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
-  double* __restrict__ B_vals = (double*)(B->vals);
+  float* __restrict__ B_vals = (float*)(B->vals);
   int C2_dimension = (int)(C->dimensions[1]);
-  double* __restrict__ C_vals = (double*)(C->vals);
+  float* __restrict__ C_vals = (float*)(C->vals);
   int D1_dimension = (int)(D->dimensions[0]);
-  double* __restrict__ D_vals = (double*)(D->vals);
+  float* __restrict__ D_vals = (float*)(D->vals);
 
   int32_t block = blockIdx.x;
   int32_t thread = (threadIdx.x % (32));
   int32_t warp = (threadIdx.x / 32);
-  if (threadIdx.x >= 512) {
-    return;
+
+  int32_t pB2_begin = i_blockStarts[block];
+  int32_t pB2_end = i_blockStarts[(block + 1)];
+  int32_t fpos1 = warp * 16;
+  int32_t fposB = block * 64 + fpos1;
+  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
+  int32_t i = i_pos;
+  for (int32_t nnz = 0; nnz < 16; nnz++) {
+    int32_t fpos1 = warp * 16 + nnz;
+    int32_t fposB = block * 64 + fpos1;
+    if (fposB >= B2_pos[B1_dimension])
+      break;
+
+    int32_t f = B2_crd[fposB];
+    while (fposB == B2_pos[(i_pos + 1)]) {
+      i_pos = i_pos + 1;
+      i = i_pos;
+    }
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
+      int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
+      int32_t jC = i * C2_dimension + j;
+      int32_t jD = f * D1_dimension + j;
+      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+    }
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
   }
+}
+
+__global__
+void sddmm_csr_gpu_tacoDeviceKernel_16_8(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
+  int B1_dimension = (int)(B->dimensions[0]);
+  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
+  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
+  float* __restrict__ B_vals = (float*)(B->vals);
+  int C2_dimension = (int)(C->dimensions[1]);
+  float* __restrict__ C_vals = (float*)(C->vals);
+  int D1_dimension = (int)(D->dimensions[0]);
+  float* __restrict__ D_vals = (float*)(D->vals);
+
+  int32_t block = blockIdx.x;
+  int32_t thread = (threadIdx.x % (32));
+  int32_t warp = (threadIdx.x / 32);
+
+  int32_t pB2_begin = i_blockStarts[block];
+  int32_t pB2_end = i_blockStarts[(block + 1)];
+  int32_t fpos1 = warp * 16;
+  int32_t fposB = block * 128 + fpos1;
+  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
+  int32_t i = i_pos;
+  for (int32_t nnz = 0; nnz < 16; nnz++) {
+    int32_t fpos1 = warp * 16 + nnz;
+    int32_t fposB = block * 128 + fpos1;
+    if (fposB >= B2_pos[B1_dimension])
+      break;
+
+    int32_t f = B2_crd[fposB];
+    while (fposB == B2_pos[(i_pos + 1)]) {
+      i_pos = i_pos + 1;
+      i = i_pos;
+    }
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
+      int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
+      int32_t jC = i * C2_dimension + j;
+      int32_t jD = f * D1_dimension + j;
+      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+    }
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
+  }
+}
+
+__global__
+void sddmm_csr_gpu_tacoDeviceKernel_16_16(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
+  int B1_dimension = (int)(B->dimensions[0]);
+  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
+  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
+  float* __restrict__ B_vals = (float*)(B->vals);
+  int C2_dimension = (int)(C->dimensions[1]);
+  float* __restrict__ C_vals = (float*)(C->vals);
+  int D1_dimension = (int)(D->dimensions[0]);
+  float* __restrict__ D_vals = (float*)(D->vals);
+
+  int32_t block = blockIdx.x;
+  int32_t thread = (threadIdx.x % (32));
+  int32_t warp = (threadIdx.x / 32);
+
+  int32_t pB2_begin = i_blockStarts[block];
+  int32_t pB2_end = i_blockStarts[(block + 1)];
+  int32_t fpos1 = warp * 16;
+  int32_t fposB = block * 256 + fpos1;
+  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
+  int32_t i = i_pos;
+  for (int32_t nnz = 0; nnz < 16; nnz++) {
+    int32_t fpos1 = warp * 16 + nnz;
+    int32_t fposB = block * 256 + fpos1;
+    if (fposB >= B2_pos[B1_dimension])
+      break;
+
+    int32_t f = B2_crd[fposB];
+    while (fposB == B2_pos[(i_pos + 1)]) {
+      i_pos = i_pos + 1;
+      i = i_pos;
+    }
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
+      int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
+      int32_t jC = i * C2_dimension + j;
+      int32_t jD = f * D1_dimension + j;
+      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+    }
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
+  }
+}
+
+__global__
+void sddmm_csr_gpu_tacoDeviceKernel_16_32(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
+  int B1_dimension = (int)(B->dimensions[0]);
+  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
+  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
+  float* __restrict__ B_vals = (float*)(B->vals);
+  int C2_dimension = (int)(C->dimensions[1]);
+  float* __restrict__ C_vals = (float*)(C->vals);
+  int D1_dimension = (int)(D->dimensions[0]);
+  float* __restrict__ D_vals = (float*)(D->vals);
+
+  int32_t block = blockIdx.x;
+  int32_t thread = (threadIdx.x % (32));
+  int32_t warp = (threadIdx.x / 32);
+
+  int32_t pB2_begin = i_blockStarts[block];
+  int32_t pB2_end = i_blockStarts[(block + 1)];
+  int32_t fpos1 = warp * 16;
+  int32_t fposB = block * 512 + fpos1;
+  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
+  int32_t i = i_pos;
+  for (int32_t nnz = 0; nnz < 16; nnz++) {
+    int32_t fpos1 = warp * 16 + nnz;
+    int32_t fposB = block * 512 + fpos1;
+    if (fposB >= B2_pos[B1_dimension])
+      break;
+
+    int32_t f = B2_crd[fposB];
+    while (fposB == B2_pos[(i_pos + 1)]) {
+      i_pos = i_pos + 1;
+      i = i_pos;
+    }
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
+      int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
+      int32_t jC = i * C2_dimension + j;
+      int32_t jD = f * D1_dimension + j;
+      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+    }
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
+  }
+}
+
+__global__
+void sddmm_csr_gpu_tacoDeviceKernel_16_64(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
+  int B1_dimension = (int)(B->dimensions[0]);
+  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
+  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
+  float* __restrict__ B_vals = (float*)(B->vals);
+  int C2_dimension = (int)(C->dimensions[1]);
+  float* __restrict__ C_vals = (float*)(C->vals);
+  int D1_dimension = (int)(D->dimensions[0]);
+  float* __restrict__ D_vals = (float*)(D->vals);
+
+  int32_t block = blockIdx.x;
+  int32_t thread = (threadIdx.x % (32));
+  int32_t warp = (threadIdx.x / 32);
+
+  int32_t pB2_begin = i_blockStarts[block];
+  int32_t pB2_end = i_blockStarts[(block + 1)];
+  int32_t fpos1 = warp * 16;
+  int32_t fposB = block * 1024 + fpos1;
+  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
+  int32_t i = i_pos;
+  for (int32_t nnz = 0; nnz < 16; nnz++) {
+    int32_t fpos1 = warp * 16 + nnz;
+    int32_t fposB = block * 1024 + fpos1;
+    if (fposB >= B2_pos[B1_dimension])
+      break;
+
+    int32_t f = B2_crd[fposB];
+    while (fposB == B2_pos[(i_pos + 1)]) {
+      i_pos = i_pos + 1;
+      i = i_pos;
+    }
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
+      int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
+      int32_t jC = i * C2_dimension + j;
+      int32_t jD = f * D1_dimension + j;
+      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+    }
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
+  }
+}
+
+__global__
+void sddmm_csr_gpu_tacoDeviceKernel_16_128(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
+  int B1_dimension = (int)(B->dimensions[0]);
+  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
+  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
+  float* __restrict__ B_vals = (float*)(B->vals);
+  int C2_dimension = (int)(C->dimensions[1]);
+  float* __restrict__ C_vals = (float*)(C->vals);
+  int D1_dimension = (int)(D->dimensions[0]);
+  float* __restrict__ D_vals = (float*)(D->vals);
+
+  int32_t block = blockIdx.x;
+  int32_t thread = (threadIdx.x % (32));
+  int32_t warp = (threadIdx.x / 32);
+
+  int32_t pB2_begin = i_blockStarts[block];
+  int32_t pB2_end = i_blockStarts[(block + 1)];
+  int32_t fpos1 = warp * 16;
+  int32_t fposB = block * 2048 + fpos1;
+  int32_t i_pos = taco_binarySearchBefore(B2_pos, pB2_begin, pB2_end, fposB);
+  int32_t i = i_pos;
+  for (int32_t nnz = 0; nnz < 16; nnz++) {
+    int32_t fpos1 = warp * 16 + nnz;
+    int32_t fposB = block * 2048 + fpos1;
+    if (fposB >= B2_pos[B1_dimension])
+      break;
+
+    int32_t f = B2_crd[fposB];
+    while (fposB == B2_pos[(i_pos + 1)]) {
+      i_pos = i_pos + 1;
+      i = i_pos;
+    }
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
+      int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
+      int32_t jC = i * C2_dimension + j;
+      int32_t jD = f * D1_dimension + j;
+      tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
+    }
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
+  }
+}
+
+
+
+__global__
+void sddmm_csr_gpu_tacoDeviceKernel_128_16(taco_tensor_t * __restrict__ A, taco_tensor_t * __restrict__ B, taco_tensor_t * __restrict__ C, taco_tensor_t * __restrict__ D, int32_t* i_blockStarts){
+  float* __restrict__ A_vals = (float*)(A->vals);
+  int B1_dimension = (int)(B->dimensions[0]);
+  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
+  int* __restrict__ B2_crd = (int*)(B->indices[1][1]);
+  float* __restrict__ B_vals = (float*)(B->vals);
+  int C2_dimension = (int)(C->dimensions[1]);
+  float* __restrict__ C_vals = (float*)(C->vals);
+  int D1_dimension = (int)(D->dimensions[0]);
+  float* __restrict__ D_vals = (float*)(D->vals);
+
+  int32_t block = blockIdx.x;
+  int32_t thread = (threadIdx.x % (32));
+  int32_t warp = (threadIdx.x / 32);
 
   int32_t pB2_begin = i_blockStarts[block];
   int32_t pB2_end = i_blockStarts[(block + 1)];
@@ -163,32 +450,34 @@ void sddmm_csr_gpu_tacoDeviceKernel0(taco_tensor_t * __restrict__ A, taco_tensor
       i_pos = i_pos + 1;
       i = i_pos;
     }
-    double tdense_val_val = 0.0;
-    #pragma unroll 4
-    for (int32_t dense_val = 0; dense_val < 4; dense_val++) {
+    float tdense_val_val = 0.0;
+    for (int32_t dense_val = 0; ; dense_val++) {
       int32_t j = dense_val * 32 + thread;
+      if (j >= C2_dimension) {
+        break;
+      }
       int32_t jC = i * C2_dimension + j;
       int32_t jD = f * D1_dimension + j;
       tdense_val_val = tdense_val_val + B_vals[fposB] * C_vals[jC] * D_vals[jD];
     }
-    atomicAddWarp<double>(A_vals, fposB, tdense_val_val);
+    atomicAddWarp<float>(A_vals, fposB, tdense_val_val);
   }
-
 }
 
-int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, taco_tensor_t *D) {
-  int B1_dimension = (int)(B->dimensions[0]);
-  int* __restrict__ B2_pos = (int*)(B->indices[1][0]);
-
-  int32_t* i_blockStarts = 0;
-  gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + 2047) / 2048 + 1)));
-  i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) 2048, (int32_t) 128, ((B2_pos[B1_dimension] + 2047) / 2048));
-
-
-  sddmm_csr_gpu_tacoDeviceKernel0<<<(B2_pos[B1_dimension] + 2047) / 2048, 32 * 16>>>(A, B, C, D, i_blockStarts);
-  cudaDeviceSynchronize();
-
-  cudaFree(i_blockStarts);
-
-  return 0;
+kernelFunction_t GetKernelFunc(int nnz_per_warp, int warp_per_tb) {
+  if (nnz_per_warp == 16) {
+    switch (warp_per_tb) {
+      case 4: return &sddmm_csr_gpu_tacoDeviceKernel_16_4;
+      case 8: return &sddmm_csr_gpu_tacoDeviceKernel_16_8;
+      case 16: return &sddmm_csr_gpu_tacoDeviceKernel_16_16;
+      case 32: return &sddmm_csr_gpu_tacoDeviceKernel_16_32;
+      case 64: return &sddmm_csr_gpu_tacoDeviceKernel_16_64;
+      case 128: return &sddmm_csr_gpu_tacoDeviceKernel_16_128;
+    }
+  } else if (nnz_per_warp == 128) {
+    switch(warp_per_tb) {
+      case 16: return &sddmm_csr_gpu_tacoDeviceKernel_128_16;
+    }
+  }
+  throw;
 }
