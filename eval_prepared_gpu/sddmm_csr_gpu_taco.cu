@@ -87,9 +87,8 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
   int nnz_per_tb = nnz_per_warp * warp_per_tb;
   int32_t* i_blockStarts = 0;
   gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb + 1)));
-  i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) nnz_per_tb, (int32_t) 128, ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb));
+  i_blockStarts = taco_binarySearchBeforeBlockLaunch(B2_pos, i_blockStarts, (int32_t) 0, B1_dimension, (int32_t) nnz_per_tb, (int32_t) nnz_per_warp, ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb));
 
-  // std::cout << nnz_per_warp << " " << warp_per_tb << " " << ((B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb) << "\n";
   kernelFunction_t kernel_func = GetKernelFunc(nnz_per_warp, warp_per_tb);
 
   if (profile) {
@@ -106,7 +105,7 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
     }
     gpu_timer.stop();
     float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
-    printf("Time %f (ms)\n", kernel_dur_msecs);
+    printf("nnz_per_warp %d warp_per_tb %d Time %f (ms)\n", nnz_per_warp, warp_per_tb, kernel_dur_msecs);
   } else {
     kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
   }
@@ -128,7 +127,7 @@ void read_npz_file(const std::string& filename, int &M, int &K, int &NNZ, std::v
   indices = std::move(data["indices"].as_vec<int>());
 }
 
-float C_val[100000000], D_val[100000000];
+// float C_val[100000000], D_val[100000000];
 
 int main(int argc, char *argv[]) {
   // std::default_random_engine gen(0);
@@ -148,7 +147,7 @@ int main(int argc, char *argv[]) {
     } 
     row++;
   }
-  printf("%d %d %d\n", M, N, nnz);
+  printf("M %d nnz %d\n", M, nnz);
 
   int K = std::stoi(argv[2]);
 
@@ -156,13 +155,13 @@ int main(int argc, char *argv[]) {
   Tensor<float> B("B", {M, N}, CSR);
   Tensor<float> C("C", {M, K}, {Dense, Dense});
   Tensor<float> D("D", {K, N}, Format({{Dense, Dense}, {1, 0}}));
-  Tensor<float> expected("expected", {M, N}, CSR);
+  // Tensor<float> expected("expected", {M, N}, CSR);
 
   for (int i = 0; i < M; ++i) {
     for (int j = 0; j < K; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       C.insert({i, j}, rand_float);
-      C_val[i * K + j] = rand_float;
+      // C_val[i * K + j] = rand_float;
     }
   }
 
@@ -170,7 +169,7 @@ int main(int argc, char *argv[]) {
     for (int j = 0; j < N; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       D.insert({i, j}, rand_float);
-      D_val[i * N + j] = rand_float;
+      // D_val[i * N + j] = rand_float;
     }
   }
 
@@ -183,7 +182,7 @@ int main(int argc, char *argv[]) {
     B.insert({i, j}, 1.0f);
     A.insert({i, j}, 0.0f);
 
-    float dot = 0.0f;
+    // float dot = 0.0f;
     // for (int k = 0; k < K; ++k) {
     //   dot += C_val[i * K + k] * D_val[k * N + j];
     // }
@@ -193,11 +192,17 @@ int main(int argc, char *argv[]) {
   A.pack();
   // expected.pack();
 
-  sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true, 128, 16);
+  const int arr_nnz_per_warp[] = {16, 32, 64, 128, 256, 512};
+  const int arr_warp_per_tb[] = {1, 2, 4, 8, 16, 32};
+
+  for (int i = 0; i < 6; ++i) {
+    for (int j = 0; j < 6; ++j) {
+      sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true, arr_nnz_per_warp[i], arr_warp_per_tb[j]);
+    }
+  }
+  // sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), false, 512, 16);
 
   // ASSERT_TENSOR_EQ(expected, A);
-
-  // sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true)
 
   return 0;
 }
