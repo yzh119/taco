@@ -267,9 +267,8 @@ TEST(scheduling_eval, sddmmGPU) {
 
 TEST(generate_evaluation_files, gpu) {
   vector<vector<int>> spmm_parameters = {}; // {NNZ_PER_WARP, BLOCK_SIZE, CO_FACTOR}
-  spmm_parameters.push_back({16,512});
+  spmm_parameters.push_back({16, 16 * 32});
 
-  vector<vector<int>> spmm_dcsr_parameters = {{4, 256, 4}}; // {NNZ_PER_WARP, BLOCK_SIZE, CO_FACTOR}
   vector<vector<int>> sddmm_parameters = {{4*32, 512, 4}}; // {NNZ_PER_WARP, BLOCK_SIZE, CO_FACTOR}
 
   int NUM_I = 100;
