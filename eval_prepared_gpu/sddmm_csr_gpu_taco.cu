@@ -34,6 +34,18 @@ typedef struct {
 
 using namespace taco;
 
+#define CUDA_KERNEL_CALL(kernel, nblks, nthrs, shmem, stream, ...) \
+  {                                                                \
+    (kernel) <<< (nblks), (nthrs), (shmem), (stream) >>>           \
+      (__VA_ARGS__);                                               \
+    cudaError_t e = cudaGetLastError();                            \
+    if (e != cudaSuccess) {                                        \
+        fprintf(stderr, "CUDA kernel launch error: %s",cudaGetErrorString(e)); \
+        abort();                                                  \
+    }                                                              \
+  }
+
+
 struct GpuTimer {
   cudaEvent_t startEvent;
   cudaEvent_t stopEvent;
@@ -88,7 +100,9 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
       if (iter == warmup_iter) {
         gpu_timer.start();
       }
-      kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
+      // printf("%d %d\n",(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb);
+      //kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
+      CUDA_KERNEL_CALL(kernel_func, (B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, D, i_blockStarts);
     }
     gpu_timer.stop();
     float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
@@ -183,7 +197,7 @@ int main(int argc, char *argv[]) {
 
   // ASSERT_TENSOR_EQ(expected, A);
 
-  // sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true);
+  // sddmm_csr_gpu_taco(A.getTacoTensorT(), B.getTacoTensorT(), C.getTacoTensorT(), D.getTacoTensorT(), true)
 
   return 0;
 }
