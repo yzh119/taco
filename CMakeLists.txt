@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.8.3 FATAL_ERROR)
 project(taco)
-option(CUDA "Build for NVIDIA GPU (CUDA must be preinstalled)" OFF)
+option(CUDA "Build for NVIDIA GPU (CUDA must be preinstalled)" ON)
 option(OPENMP" Build with OpenMP execution support" OFF)
 if(CUDA)
   message("-- Searching for CUDA Installation")

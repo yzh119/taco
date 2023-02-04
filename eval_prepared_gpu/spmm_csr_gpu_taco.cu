@@ -89,7 +89,7 @@ int spmm_csr_gpu_taco(taco_tensor_t *C, taco_tensor_t *A, taco_tensor_t *B, bool
 
   int nnz_per_tb = nnz_per_warp * warp_per_tb;
   int32_t* i_blockStarts = 0;
-  gpuErrchk(cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb + 1)));
+  cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb + 1));
   i_blockStarts = taco_binarySearchBeforeBlockLaunch(A2_pos, i_blockStarts, (int32_t) 0, A1_dimension, (int32_t) nnz_per_tb, (int32_t) warp_per_tb * 32, ((A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb));
 
   kernelFunction_t kernel_func = GetKernelFunc(nnz_per_warp, warp_per_tb);

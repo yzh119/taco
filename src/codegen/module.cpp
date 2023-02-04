@@ -124,7 +124,7 @@ string Module::compile() {
   if (should_use_CUDA_codegen()) {
     cc = "nvcc";
     cflags = util::getFromEnv("TACO_NVCCFLAGS",
-    get_default_CUDA_compiler_flags());
+      get_default_CUDA_compiler_flags()) + " -allow-unsupported-compiler";
     file_ending = ".cu";
     shims_file = prefix + "_shims.cpp";
   }
