@@ -12,6 +12,7 @@
 #include "taco.h"
 #include <cuda_runtime_api.h>
 #include "../test/gtest/gtest.h"
+#include "utils.cuh"
 #include "spmm_csr_gpu_taco.h"
 #define TACO_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
 #define TACO_MAX(_a,_b) ((_a) > (_b) ? (_a) : (_b))
@@ -34,50 +35,15 @@ typedef struct {
 
 using namespace taco;
 
-#define CUDA_KERNEL_CALL(kernel, nblks, nthrs, shmem, stream, ...) \
-  {                                                                \
-    (kernel) <<< (nblks), (nthrs), (shmem), (stream) >>>           \
-      (__VA_ARGS__);                                               \
-    cudaError_t e = cudaGetLastError();                            \
-    if (e != cudaSuccess) {                                        \
-        fprintf(stderr, "CUDA kernel launch error: %s",cudaGetErrorString(e)); \
-        abort();                                                  \
-    }                                                              \
-  }
-
-
-struct GpuTimer {
-  cudaEvent_t startEvent;
-  cudaEvent_t stopEvent;
-
-  GpuTimer() {
-    cudaEventCreate(&startEvent);
-    cudaEventCreate(&stopEvent);
-  }
-
-  ~GpuTimer() {
-    cudaEventDestroy(startEvent);
-    cudaEventDestroy(stopEvent);
-  }
-
-  void start() { cudaEventRecord(startEvent, 0); }
-
-  void stop() {
-    cudaEventRecord(stopEvent, 0);
-    cudaEventSynchronize(stopEvent);
-  }
-
-  float elapsed_msecs() {
-    float elapsed;
-    cudaEventElapsedTime(&elapsed, startEvent, stopEvent);
-    return elapsed;
-  }
-};
 
 void ASSERT_TENSOR_EQ(TensorBase expected, TensorBase actual) {
   SCOPED_TRACE(std::string("expected: ") + util::toString(expected));
   SCOPED_TRACE(std::string("  actual: ") + util::toString(actual));
   ASSERT_TRUE(equals(expected, actual));
+}
+
+std::string config_str(int nnz_per_warp, int warp_per_tb) {
+  return "config(nnz_per_warp=" + std::to_string(nnz_per_warp) + ", warp_per_tb=" + std::to_string(warp_per_tb) + ")";
 }
 
 int spmm_csr_gpu_taco(taco_tensor_t *C, taco_tensor_t *A, taco_tensor_t *B, bool profile, int nnz_per_warp, int warp_per_tb) {
@@ -90,25 +56,55 @@ int spmm_csr_gpu_taco(taco_tensor_t *C, taco_tensor_t *A, taco_tensor_t *B, bool
   int nnz_per_tb = nnz_per_warp * warp_per_tb;
   int32_t* i_blockStarts = 0;
   cudaMallocManaged((void**)&i_blockStarts, sizeof(int32_t) * ((A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb + 1));
-  i_blockStarts = taco_binarySearchBeforeBlockLaunch(A2_pos, i_blockStarts, (int32_t) 0, A1_dimension, (int32_t) nnz_per_tb, (int32_t) warp_per_tb * 32, ((A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb));
+  bool bsearch_failed = false;
+  try {
+    i_blockStarts = taco_binarySearchBeforeBlockLaunch(A2_pos, i_blockStarts, (int32_t) 0, A1_dimension, (int32_t) nnz_per_tb, (int32_t) warp_per_tb * 32, ((A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb));
+  } catch (std::exception const& e) {
+    std::cerr << "Binary search failed: " << config_str(nnz_per_warp, warp_per_tb) << ", error string:\n" << e.what() << "\n";
+    bsearch_failed = true;
+  }
+  cudaDeviceSynchronize();
 
   kernelFunction_t kernel_func = GetKernelFunc(nnz_per_warp, warp_per_tb);
 
-  if (profile) {
-    GpuTimer gpu_timer;
-    int warmup_iter = 10;
-    int repeat_iter = 100;
-    for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
-      if (iter == warmup_iter) {
-        gpu_timer.start();
+  if (!bsearch_failed) {
+    try {
+      if (profile) {
+        char *env_flush_l2 = std::getenv("FLUSH_L2");
+        bool flush_l2 = env_flush_l2 ? std::strcmp(env_flush_l2, "ON") == 0 : false;
+        GpuTimer gpu_timer;
+        int warmup_iter = 10;
+        int repeat_iter = 100;
+        float kernel_dur_msecs = 0;
+        if (flush_l2) {
+          for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
+            if (iter >= warmup_iter) {
+              gpu_timer.start(true);
+            }
+            CUDA_KERNEL_CALL(kernel_func, (A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, i_blockStarts);
+            if (iter >= warmup_iter) {
+              gpu_timer.stop();
+              kernel_dur_msecs += gpu_timer.elapsed_msecs();
+            }
+          }
+          kernel_dur_msecs /= repeat_iter;
+        } else {
+          for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
+            if (iter == warmup_iter) {
+              gpu_timer.start(false);
+            }
+            CUDA_KERNEL_CALL(kernel_func, (A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, i_blockStarts);
+          }
+          gpu_timer.stop();
+          kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
+        }
+        printf("nnz_per_warp %d warp_per_tb %d Time %f (ms)\n", nnz_per_warp, warp_per_tb, kernel_dur_msecs);
+      } else {
+        kernel_func<<<(A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, i_blockStarts);
       }
-      CUDA_KERNEL_CALL(kernel_func, (A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, i_blockStarts);
+    } catch (std::exception const& e) {
+      std::cerr << "Profile failed: " << config_str(nnz_per_warp, warp_per_tb) << ", error string:\n" << e.what() << "\n";
     }
-    gpu_timer.stop();
-    float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
-    printf("nnz_per_warp %d warp_per_tb %d Time %f (ms)\n", nnz_per_warp, warp_per_tb, kernel_dur_msecs);
-  } else {
-    kernel_func<<<(A2_pos[A1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, i_blockStarts);
   }
   cudaDeviceSynchronize();
 
@@ -129,14 +125,7 @@ void read_npz_file(const std::string& filename, int &M, int &K, int &NNZ, std::v
   indices = std::move(data["indices"].as_vec<int>());
 }
 
-// float A_val[10000000];
-// float B_val[100000000];
-// float expected_val[100000000];
-
 int main(int argc, char *argv[]) {
-  // std::default_random_engine gen(0);
-  // std::uniform_real_distribution<float> unif(0.0, 1.0);
-
   int M;
   int N;
   int nnz;
@@ -166,19 +155,17 @@ int main(int argc, char *argv[]) {
     int j = csr_indices_buffer[t];
     float rand_float = (float)rand() / (float)(RAND_MAX);
     A.insert({i, j}, rand_float);
-    // A_val[t] = rand_float;
   }
   for (int i = 0; i < N; ++i) {
     for (int j = 0; j < K; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       B.insert({i, j}, rand_float);
-      // B_val[i * K + j] = rand_float;
     }
   }
 
   for (int i = 0; i < M; ++i) {
-    for (int k = 0; k < K; ++k) {
-      C.insert({i, k}, 0.0f);
+    for (int j = 0; j < K; ++j) {
+      C.insert({i, j}, 0.0f);
     }
   }
 

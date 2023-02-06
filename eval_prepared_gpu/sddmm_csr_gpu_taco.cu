@@ -12,6 +12,7 @@
 #include "taco.h"
 #include <cuda_runtime_api.h>
 #include "../test/gtest/gtest.h"
+#include "utils.cuh"
 #include "sddmm_csr_gpu_taco.h"
 #define TACO_MIN(_a,_b) ((_a) < (_b) ? (_a) : (_b))
 #define TACO_MAX(_a,_b) ((_a) > (_b) ? (_a) : (_b))
@@ -34,45 +35,6 @@ typedef struct {
 
 using namespace taco;
 
-#define CUDA_KERNEL_CALL(kernel, nblks, nthrs, shmem, stream, ...) \
-  {                                                                \
-    (kernel) <<< (nblks), (nthrs), (shmem), (stream) >>>           \
-      (__VA_ARGS__);                                               \
-    cudaError_t e = cudaGetLastError();                            \
-    if (e != cudaSuccess) {                                        \
-        fprintf(stderr, "CUDA kernel launch error: %s",cudaGetErrorString(e)); \
-        abort();                                                  \
-    }                                                              \
-  }
-
-
-struct GpuTimer {
-  cudaEvent_t startEvent;
-  cudaEvent_t stopEvent;
-
-  GpuTimer() {
-    cudaEventCreate(&startEvent);
-    cudaEventCreate(&stopEvent);
-  }
-
-  ~GpuTimer() {
-    cudaEventDestroy(startEvent);
-    cudaEventDestroy(stopEvent);
-  }
-
-  void start() { cudaEventRecord(startEvent, 0); }
-
-  void stop() {
-    cudaEventRecord(stopEvent, 0);
-    cudaEventSynchronize(stopEvent);
-  }
-
-  float elapsed_msecs() {
-    float elapsed;
-    cudaEventElapsedTime(&elapsed, startEvent, stopEvent);
-    return elapsed;
-  }
-};
 
 void ASSERT_TENSOR_EQ(TensorBase expected, TensorBase actual) {
   SCOPED_TRACE(std::string("expected: ") + util::toString(expected));
@@ -92,19 +54,35 @@ int sddmm_csr_gpu_taco(taco_tensor_t *A, taco_tensor_t *B, taco_tensor_t *C, tac
   kernelFunction_t kernel_func = GetKernelFunc(nnz_per_warp, warp_per_tb);
 
   if (profile) {
+    char *env_flush_l2 = std::getenv("FLUSH_L2");
+    bool flush_l2 = env_flush_l2 ? std::strcmp(env_flush_l2, "ON") == 0 : false;
+
     GpuTimer gpu_timer;
     int warmup_iter = 10;
     int repeat_iter = 100;
-    for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
-      if (iter == warmup_iter) {
-        gpu_timer.start();
+    float kernel_dur_msecs = 0;
+    if (flush_l2) {
+      for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
+        if (iter >= warmup_iter) {
+          gpu_timer.start(true);
+        }
+        CUDA_KERNEL_CALL(kernel_func, (B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, D, i_blockStarts);
+        if (iter >= warmup_iter) {
+          gpu_timer.stop();
+          kernel_dur_msecs += gpu_timer.elapsed_msecs();
+        }
       }
-      // printf("%d %d\n",(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb);
-      //kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
-      CUDA_KERNEL_CALL(kernel_func, (B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, D, i_blockStarts);
+      kernel_dur_msecs /= repeat_iter;
+    } else {
+      for (int iter = 0; iter < warmup_iter + repeat_iter; iter++) {
+        if (iter == warmup_iter) {
+          gpu_timer.start(false);
+        }
+        CUDA_KERNEL_CALL(kernel_func, (B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb, 0, nullptr, A, B, C, D, i_blockStarts);
+      }
+      gpu_timer.stop();
+      kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
     }
-    gpu_timer.stop();
-    float kernel_dur_msecs = gpu_timer.elapsed_msecs() / repeat_iter;
     printf("nnz_per_warp %d warp_per_tb %d Time %f (ms)\n", nnz_per_warp, warp_per_tb, kernel_dur_msecs);
   } else {
     kernel_func<<<(B2_pos[B1_dimension] + nnz_per_tb - 1) / nnz_per_tb, 32 * warp_per_tb>>>(A, B, C, D, i_blockStarts);
@@ -161,7 +139,6 @@ int main(int argc, char *argv[]) {
     for (int j = 0; j < K; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       C.insert({i, j}, rand_float);
-      // C_val[i * K + j] = rand_float;
     }
   }
 
@@ -169,7 +146,6 @@ int main(int argc, char *argv[]) {
     for (int j = 0; j < N; ++j) {
       float rand_float = (float)rand() / (float)(RAND_MAX);
       D.insert({i, j}, rand_float);
-      // D_val[i * N + j] = rand_float;
     }
   }
 

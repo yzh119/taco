@@ -88,7 +88,7 @@ __global__ void taco_binarySearchBeforeBlock(int * __restrict__ array, int * __r
 
 __host__ int * taco_binarySearchBeforeBlockLaunch(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int values_per_block, int block_size, int num_blocks){
   int num_search_blocks = (num_blocks + 1 + block_size - 1) / block_size;
-  taco_binarySearchBeforeBlock<<<num_search_blocks, block_size>>>(array, results, arrayStart, arrayEnd, values_per_block, num_blocks);
+  CUDA_KERNEL_CALL(taco_binarySearchBeforeBlock, num_search_blocks, block_size, 0, nullptr, array, results, arrayStart, arrayEnd, values_per_block, num_blocks);
   return results;
 }
 __global__ void taco_binarySearchIndirectBeforeBlock(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int * __restrict__ targets, int num_blocks) {
@@ -104,7 +104,7 @@ __global__ void taco_binarySearchIndirectBeforeBlock(int * __restrict__ array, i
 
 __host__ int * taco_binarySearchIndirectBeforeBlockLaunch(int * __restrict__ array, int * __restrict__ results, int arrayStart, int arrayEnd, int * __restrict__ targets, int block_size, int num_blocks){
   int num_search_blocks = (num_blocks + 1 + block_size - 1) / block_size;
-  taco_binarySearchIndirectBeforeBlock<<<num_search_blocks, block_size>>>(array, results, arrayStart, arrayEnd, targets, num_blocks);
+  CUDA_KERNEL_CALL(taco_binarySearchIndirectBeforeBlock, num_search_blocks, block_size, 0, nullptr, array, results, arrayStart, arrayEnd, targets, num_blocks);
   return results;
 }
 template<typename T>
@@ -166,7 +166,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_1(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -174,8 +174,10 @@ void spmm_csr_gpu_tacoDeviceKernel_16_1(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -217,7 +219,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_2(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -225,8 +227,10 @@ void spmm_csr_gpu_tacoDeviceKernel_16_2(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -268,7 +272,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_4(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -276,8 +280,10 @@ void spmm_csr_gpu_tacoDeviceKernel_16_4(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -300,7 +306,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_8(taco_tensor_t * __restrict__ A, taco_ten
     int32_t k = dense_val * 32 + thread;
     if (k >= B2_dimension) {
       break;
-    }
+    } 
     float tnnz_val = 0.0;
     int32_t pA2_begin = i_blockStarts[block];
     int32_t pA2_end = i_blockStarts[(block + 1)];
@@ -319,7 +325,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_8(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -327,8 +333,10 @@ void spmm_csr_gpu_tacoDeviceKernel_16_8(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -370,7 +378,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_16(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -378,8 +386,10 @@ void spmm_csr_gpu_tacoDeviceKernel_16_16(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -421,7 +431,7 @@ void spmm_csr_gpu_tacoDeviceKernel_16_32(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -429,8 +439,10 @@ void spmm_csr_gpu_tacoDeviceKernel_16_32(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -472,7 +484,7 @@ void spmm_csr_gpu_tacoDeviceKernel_32_1(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -480,8 +492,10 @@ void spmm_csr_gpu_tacoDeviceKernel_32_1(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -523,7 +537,7 @@ void spmm_csr_gpu_tacoDeviceKernel_32_2(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -531,8 +545,10 @@ void spmm_csr_gpu_tacoDeviceKernel_32_2(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -574,7 +590,7 @@ void spmm_csr_gpu_tacoDeviceKernel_32_4(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -582,8 +598,10 @@ void spmm_csr_gpu_tacoDeviceKernel_32_4(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -625,7 +643,7 @@ void spmm_csr_gpu_tacoDeviceKernel_32_8(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -633,8 +651,10 @@ void spmm_csr_gpu_tacoDeviceKernel_32_8(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -676,7 +696,7 @@ void spmm_csr_gpu_tacoDeviceKernel_32_16(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -684,8 +704,10 @@ void spmm_csr_gpu_tacoDeviceKernel_32_16(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -727,7 +749,7 @@ void spmm_csr_gpu_tacoDeviceKernel_32_32(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -735,8 +757,10 @@ void spmm_csr_gpu_tacoDeviceKernel_32_32(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -778,7 +802,7 @@ void spmm_csr_gpu_tacoDeviceKernel_64_1(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -786,8 +810,10 @@ void spmm_csr_gpu_tacoDeviceKernel_64_1(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -829,7 +855,7 @@ void spmm_csr_gpu_tacoDeviceKernel_64_2(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -837,8 +863,10 @@ void spmm_csr_gpu_tacoDeviceKernel_64_2(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -880,7 +908,7 @@ void spmm_csr_gpu_tacoDeviceKernel_64_4(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -888,8 +916,10 @@ void spmm_csr_gpu_tacoDeviceKernel_64_4(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -931,7 +961,7 @@ void spmm_csr_gpu_tacoDeviceKernel_64_8(taco_tensor_t * __restrict__ A, taco_ten
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -939,8 +969,10 @@ void spmm_csr_gpu_tacoDeviceKernel_64_8(taco_tensor_t * __restrict__ A, taco_ten
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -982,7 +1014,7 @@ void spmm_csr_gpu_tacoDeviceKernel_64_16(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -990,8 +1022,10 @@ void spmm_csr_gpu_tacoDeviceKernel_64_16(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1033,7 +1067,7 @@ void spmm_csr_gpu_tacoDeviceKernel_64_32(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1041,8 +1075,10 @@ void spmm_csr_gpu_tacoDeviceKernel_64_32(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1084,7 +1120,7 @@ void spmm_csr_gpu_tacoDeviceKernel_128_1(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1092,8 +1128,10 @@ void spmm_csr_gpu_tacoDeviceKernel_128_1(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1135,7 +1173,7 @@ void spmm_csr_gpu_tacoDeviceKernel_128_2(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1143,8 +1181,10 @@ void spmm_csr_gpu_tacoDeviceKernel_128_2(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1186,7 +1226,7 @@ void spmm_csr_gpu_tacoDeviceKernel_128_4(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1194,8 +1234,10 @@ void spmm_csr_gpu_tacoDeviceKernel_128_4(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1237,7 +1279,7 @@ void spmm_csr_gpu_tacoDeviceKernel_128_8(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1245,8 +1287,10 @@ void spmm_csr_gpu_tacoDeviceKernel_128_8(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1288,7 +1332,7 @@ void spmm_csr_gpu_tacoDeviceKernel_128_16(taco_tensor_t * __restrict__ A, taco_t
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1296,8 +1340,10 @@ void spmm_csr_gpu_tacoDeviceKernel_128_16(taco_tensor_t * __restrict__ A, taco_t
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1339,7 +1385,7 @@ void spmm_csr_gpu_tacoDeviceKernel_128_32(taco_tensor_t * __restrict__ A, taco_t
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1347,8 +1393,10 @@ void spmm_csr_gpu_tacoDeviceKernel_128_32(taco_tensor_t * __restrict__ A, taco_t
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1390,7 +1438,7 @@ void spmm_csr_gpu_tacoDeviceKernel_256_1(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1398,8 +1446,10 @@ void spmm_csr_gpu_tacoDeviceKernel_256_1(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1441,7 +1491,7 @@ void spmm_csr_gpu_tacoDeviceKernel_256_2(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1449,8 +1499,10 @@ void spmm_csr_gpu_tacoDeviceKernel_256_2(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1492,7 +1544,7 @@ void spmm_csr_gpu_tacoDeviceKernel_256_4(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1500,8 +1552,10 @@ void spmm_csr_gpu_tacoDeviceKernel_256_4(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1543,7 +1597,7 @@ void spmm_csr_gpu_tacoDeviceKernel_256_8(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1551,8 +1605,10 @@ void spmm_csr_gpu_tacoDeviceKernel_256_8(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1594,7 +1650,7 @@ void spmm_csr_gpu_tacoDeviceKernel_256_16(taco_tensor_t * __restrict__ A, taco_t
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1602,8 +1658,10 @@ void spmm_csr_gpu_tacoDeviceKernel_256_16(taco_tensor_t * __restrict__ A, taco_t
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1645,7 +1703,7 @@ void spmm_csr_gpu_tacoDeviceKernel_256_32(taco_tensor_t * __restrict__ A, taco_t
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1653,8 +1711,10 @@ void spmm_csr_gpu_tacoDeviceKernel_256_32(taco_tensor_t * __restrict__ A, taco_t
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1696,7 +1756,7 @@ void spmm_csr_gpu_tacoDeviceKernel_512_1(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1704,8 +1764,10 @@ void spmm_csr_gpu_tacoDeviceKernel_512_1(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1747,7 +1809,7 @@ void spmm_csr_gpu_tacoDeviceKernel_512_2(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1755,8 +1817,10 @@ void spmm_csr_gpu_tacoDeviceKernel_512_2(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1798,7 +1862,7 @@ void spmm_csr_gpu_tacoDeviceKernel_512_4(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1806,8 +1870,10 @@ void spmm_csr_gpu_tacoDeviceKernel_512_4(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1849,7 +1915,7 @@ void spmm_csr_gpu_tacoDeviceKernel_512_8(taco_tensor_t * __restrict__ A, taco_te
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1857,8 +1923,10 @@ void spmm_csr_gpu_tacoDeviceKernel_512_8(taco_tensor_t * __restrict__ A, taco_te
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1900,7 +1968,7 @@ void spmm_csr_gpu_tacoDeviceKernel_512_16(taco_tensor_t * __restrict__ A, taco_t
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1908,8 +1976,10 @@ void spmm_csr_gpu_tacoDeviceKernel_512_16(taco_tensor_t * __restrict__ A, taco_t
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
@@ -1951,7 +2021,7 @@ void spmm_csr_gpu_tacoDeviceKernel_512_32(taco_tensor_t * __restrict__ A, taco_t
         i_pos = i_pos + 1;
         i = i_pos;
       }
-      int32_t iC = k * C1_dimension + i;
+      int32_t iC = i * B2_dimension + k;
       int32_t kB = f * B2_dimension + k;
       tnnz_val = tnnz_val + A_vals[fposA] * B_vals[kB];
       if (fposA + 1 == A2_pos[(i_pos + 1)]) {
@@ -1959,8 +2029,10 @@ void spmm_csr_gpu_tacoDeviceKernel_512_32(taco_tensor_t * __restrict__ A, taco_t
         tnnz_val = 0.0;
       }
     }
-    int32_t iC = k * C1_dimension + i;
-    atomicAdd(&C_vals[iC], tnnz_val);
+    if (i < C1_dimension) {
+      int32_t iC = i * B2_dimension + k;
+      atomicAdd(&C_vals[iC], tnnz_val);
+    }
   }
 }
 
